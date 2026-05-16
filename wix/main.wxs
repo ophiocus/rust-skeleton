@@ -1,0 +1,132 @@
+<?xml version='1.0' encoding='windows-1252'?>
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <!--
+      Tokens rewritten by scripts/new_app.ps1:
+        __APP_NAME__       : display name (e.g. "My App")
+        __APP_SLUG__       : lowercase folder name (e.g. "myapp")
+        __APP_EXE__        : executable name without .exe (matches Cargo `[[bin]]`)
+        __APP_MANUFACTURER__
+        __APP_DESCRIPTION__
+        __APP_GH_URL__
+        __UPGRADE_GUID__   : fresh UUID per app
+        __PATH_GUID__
+        __DESKTOP_GUID__
+    -->
+    <Product
+        Id='*'
+        Name='__APP_NAME__'
+        UpgradeCode='__UPGRADE_GUID__'
+        Manufacturer='__APP_MANUFACTURER__'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='__APP_DESCRIPTION__'
+            Manufacturer='__APP_MANUFACTURER__'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            AllowSameVersionUpgrades='yes'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='__APP_SLUG__ Installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='__APP_SLUG__'>
+
+                    <Directory Id='Bin' Name='bin'>
+                        <Component Id='Path' Guid='__PATH_GUID__' KeyPath='yes'>
+                            <Environment
+                                Id='PATH'
+                                Name='PATH'
+                                Value='[Bin]'
+                                Permanent='no'
+                                Part='last'
+                                Action='set'
+                                System='yes'/>
+                        </Component>
+                        <Component Id='binary0' Guid='*'>
+                            <File
+                                Id='exe0'
+                                Name='__APP_EXE__.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\__APP_EXE__.exe'
+                                KeyPath='yes'/>
+                        </Component>
+                    </Directory>
+
+                    <Component Id='DesktopShortcut' Guid='__DESKTOP_GUID__'>
+                        <Shortcut Id='DesktopShortcut'
+                            Name='__APP_NAME__'
+                            Description='__APP_DESCRIPTION__'
+                            Directory='DesktopFolder'
+                            Target='[Bin]__APP_EXE__.exe'
+                            WorkingDirectory='Bin'
+                            Icon='ProductICO' />
+                        <RegistryValue Root='HKCU'
+                            Key='Software\__APP_MANUFACTURER__\__APP_NAME__'
+                            Name='DesktopShortcut'
+                            Type='integer'
+                            Value='1'
+                            KeyPath='yes' />
+                    </Component>
+                </Directory>
+            </Directory>
+            <Directory Id='DesktopFolder' Name='Desktop' />
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs the application binary.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='DesktopShortcut'/>
+
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Add the install location to the PATH system environment variable.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Icon Id='ProductICO' SourceFile='assets\icon.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='ProductICO' />
+        <Property Id='ARPHELPLINK' Value='__APP_GH_URL__'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
+        </UI>
+
+    </Product>
+
+</Wix>
