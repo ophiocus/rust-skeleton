@@ -48,11 +48,16 @@ if (Test-Path $Target) {
 }
 
 # ---- copy files ----
-$exclude = @("target", ".git", "scripts")   # skip built artefacts + bootstrap script itself
+# Copy everything except build artefacts and VCS. scripts/ DOES ride along so
+# inherited apparatus (build_msi.ps1, future build scripts) propagates to mints;
+# only the bootstrap script itself is stripped from the mint afterwards.
+$exclude = @("target", ".git")
 Get-ChildItem -LiteralPath $SkeletonRoot -Force | ForEach-Object {
     if ($exclude -contains $_.Name) { return }
     Copy-Item -LiteralPath $_.FullName -Destination $Target -Recurse -Force
 }
+# The minting script must not ride into the minted app.
+Remove-Item -LiteralPath (Join-Path $Target "scripts\new_app.ps1") -Force -ErrorAction SilentlyContinue
 
 # ---- compute substitutions ----
 $upgradeGuid = [System.Guid]::NewGuid().ToString().ToUpperInvariant()

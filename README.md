@@ -42,13 +42,39 @@ rust-skeleton/
 │   └── License.rtf
 ├── assets/
 │   └── icon.ico         # replace with your own
-└── scripts/
-    └── new_app.ps1      # bootstrap a new sibling app
+├── scripts/
+│   ├── new_app.ps1     # bootstrap a new sibling app (stays in the skeleton)
+│   └── build_msi.ps1   # one-command MSI build (inherited by every mint)
+└── .github/workflows/
+    └── release.yml     # CI: build + attach the .msi on every v* tag
 ```
 
 ## Build
 
 ```powershell
-cargo build --release
-cargo wix --nocapture       # requires `cargo install cargo-wix`
+cargo build --release        # the app exe
 ```
+
+### MSI installer
+
+The MSI build needs **two** tools — `cargo-wix` (a driver) **and the WiX Toolset
+v3** (the actual compiler `cargo-wix` invokes). The Toolset is the easy thing to
+forget: without it, `cargo wix` cannot produce an `.msi`.
+
+```powershell
+# one command — ensures cargo-wix, checks for WiX, release-builds the .msi:
+powershell -ExecutionPolicy Bypass -File .\scripts\build_msi.ps1
+# add -InstallWix to auto-install the WiX Toolset via Chocolatey
+```
+
+Install the WiX Toolset once (any of):
+
+```powershell
+choco install wixtoolset
+winget install WiXToolset.WiXToolset
+# or wix314.exe from https://github.com/wixtoolset/wix3/releases
+```
+
+On CI, `.github/workflows/release.yml` does all of this: every `v*` tag builds the
+`.msi` and attaches it to the GitHub release — which is exactly what the app's
+self-update downloads. Ship with `git tag v0.1.1 && git push --tags`.
