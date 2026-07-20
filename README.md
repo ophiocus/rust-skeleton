@@ -43,11 +43,55 @@ rust-skeleton/
 ├── assets/
 │   └── icon.ico         # replace with your own
 ├── scripts/
-│   ├── new_app.ps1     # bootstrap a new sibling app (stays in the skeleton)
-│   └── build_msi.ps1   # one-command MSI build (inherited by every mint)
+│   ├── new_app.ps1       # bootstrap a new sibling app (stays in the skeleton)
+│   ├── bootstrap_dev.ps1 # detect/install/verify the dev toolchain (inherited)
+│   └── build_msi.ps1     # one-command MSI build (inherited by every mint)
 └── .github/workflows/
     └── release.yml     # CI: build + attach the .msi on every v* tag
 ```
+
+## Dev setup on a bare box
+
+A fresh Windows machine has **none** of the Rust half of this toolchain — no
+rustup, no cargo, and typically no Visual Studio at all, which means no `link.exe`
+for the `x86_64-pc-windows-msvc` target that both local builds and CI use. Don't
+hand-install it; the protocol is a script, and it's idempotent, so running it just
+to look costs nothing:
+
+```powershell
+# Report what's missing, change nothing:
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_dev.ps1
+
+# Install what's needed to `cargo run`:
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_dev.ps1 -Install
+
+# Also install the .msi packaging tier:
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_dev.ps1 -Install -IncludePackaging
+```
+
+| Tier | Gets you | Components |
+| --- | --- | --- |
+| **build** (default) | `cargo run` | rustup + Rust stable (MSVC) + MSVC C++ build tools |
+| **package** (`-IncludePackaging`) | a shippable `.msi` | + WiX Toolset v3 + cargo-wix |
+
+Notes worth keeping:
+
+- **MSVC, not GNU.** CI builds `x86_64-pc-windows-msvc`; matching it locally is the
+  point. The MSVC C++ build tools are the large item (~2–6 GB) — they supply the
+  linker and Windows SDK that target requires.
+- **winget only.** WiX is available from winget, so there's no reason to install
+  Chocolatey just to obtain one package.
+- **One UAC prompt.** Machine-wide installers run in a single elevated batch.
+  Per-machine MSIs fail with **1925** when unelevated rather than prompting, so
+  batching is deliberate, not cosmetic.
+- **Never pass `--scope` blanket.** Not every package publishes a user-scope
+  installer; forcing it on one that doesn't makes winget report *"No applicable
+  installer found"* and install **nothing**, while other packages in the same run
+  succeed — leaving a half-provisioned box that looks like a partial failure of
+  something else. `Rustlang.Rustup` is exactly such a package. Scope is opt-in
+  per requirement in the script for this reason.
+- Installers only change `PATH` for *new* shells; the script refreshes it in-process
+  and then verifies with `cargo check`, ending on an explicit READY / blocked-on-X.
 
 ## Build
 
