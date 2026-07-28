@@ -16,6 +16,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # build.rs stamps the version from git describe
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -32,7 +34,17 @@ jobs:
       - name: Build MSI
         run: cargo wix --nocapture
 
+      - name: SHA-256 checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem target/wix/*.msi | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $_.Name
+          } | Set-Content target/wix/SHA256SUMS.txt
+          Get-Content target/wix/SHA256SUMS.txt
+
       - name: Attach MSI to release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/wix/*.msi
+          files: |
+            target/wix/*.msi
+            target/wix/SHA256SUMS.txt
