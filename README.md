@@ -10,6 +10,43 @@ Rust + egui desktop app starter for Windows. Drop-in scaffolding for every sibli
 - **WiX MSI installer** — parameterised `wix/main.wxs` with `MajorUpgrade`, PATH component, and a Desktop shortcut.
 - **Windows icon embed** via `winres`.
 
+## Background work without stalling the UI
+
+egui redraws on a single thread, so any blocking call (network, SSH, file IO)
+made directly inside `App::update()` freezes the window until it returns. The
+recommended pattern is to move the work off the UI thread and poll for its
+result:
+
+1. Spawn a `std::thread` to do the blocking work.
+2. Hand the result back over a `std::sync::mpsc::channel`.
+3. Store the `Receiver` on your `App`, and each frame call `try_recv()` (never
+   `recv()`, which would block). While work is in flight, ask egui to keep
+   painting with `ctx.request_repaint()` (or `request_repaint_after(dt)` to
+   poll on an interval) so the UI stays responsive and picks the result up
+   promptly.
+
+```rust
+// kick off:
+let (tx, rx) = std::sync::mpsc::channel();
+std::thread::spawn(move || {
+    let result = do_blocking_work(); // network / SSH / file IO
+    let _ = tx.send(result);
+});
+self.pending = Some(rx);
+
+// each frame, in App::update():
+if let Some(rx) = &self.pending {
+    match rx.try_recv() {
+        Ok(result) => { /* apply result */ self.pending = None; }
+        Err(std::sync::mpsc::TryRecvError::Empty) => { ctx.request_repaint(); }
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.pending = None; }
+    }
+}
+```
+
+The in-repo self-update check (`src/git_update.rs`) already uses this idiom —
+read it for a complete, working example.
+
 ## Bootstrap a new app from this skeleton
 
 ```powershell

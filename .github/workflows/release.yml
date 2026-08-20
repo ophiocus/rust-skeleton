@@ -15,7 +15,7 @@ jobs:
   msi:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # build.rs stamps the version from git describe
 
@@ -43,7 +43,7 @@ jobs:
           Get-Content target/wix/SHA256SUMS.txt
 
       - name: Attach MSI to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             target/wix/*.msi

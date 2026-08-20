@@ -1,4 +1,6 @@
-#![windows_subsystem = "windows"]
+// Windowed (no console) only in release. Debug builds keep a console so
+// panics and any stdout/CLI output are visible under `cargo run`.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
 mod config;
