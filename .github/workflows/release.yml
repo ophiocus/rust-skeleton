@@ -1,8 +1,28 @@
-name: release
+# ──────────────────────────────────────────────────────────────────────────
+#  Release — build the MSI on a version tag and publish it.
+# ──────────────────────────────────────────────────────────────────────────
+#
+#  This is the other half of the skeleton's self-update: the app polls the
+#  latest GitHub release and downloads its .msi, so a release must actually
+#  carry one. No tag, no release, no installer — this workflow does nothing
+#  at all until a `v*` tag is pushed, which is the single most common reason
+#  a freshly minted app turns out not to be installable.
+#
+#  To ship:
+#      1. bump `version` in Cargo.toml
+#      2. add the section to CHANGELOG.md
+#      3. git tag vX.Y.Z && git push origin vX.Y.Z
+#
+#  Nothing here is project-specific: `scripts/new_app.ps1` copies .github
+#  verbatim without token substitution, so the binary name is read out of
+#  Cargo.toml at build time rather than baked in.
+#
+#  KEEP IN SYNC WITH .github/workflows/ci.yml — the toolchain pin, its
+#  components, and the three gate commands must match, or a green CI means
+#  nothing at tag-push time. See the comment block at the top of ci.yml.
+# ──────────────────────────────────────────────────────────────────────────
 
-# Build the MSI on every version tag and attach it to the GitHub release.
-# This is the other half of the skeleton's self-update: the app downloads the
-# .msi from the latest release, so a release must actually carry one.
+name: Release
 
 on:
   push:
@@ -12,39 +32,117 @@ permissions:
   contents: write
 
 jobs:
-  msi:
+  build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      # fetch-depth: 0 because build.rs stamps APP_VERSION from
+      # `git describe --tags`. A shallow checkout leaves it silently falling
+      # back to the Cargo version.
+      - uses: actions/checkout@v5
         with:
-          fetch-depth: 0 # build.rs stamps the version from git describe
+          fetch-depth: 0
 
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Pinned, not `@stable`, so a lint that only exists on a newer
+      # toolchain cannot fail at tag-push time after CI went green — by then
+      # the tag is public and the version number is spent. Bump deliberately,
+      # in both workflows at once.
+      #
+      # Versioned toolchain tags ship only the bare compiler, so rustfmt and
+      # clippy must be requested explicitly. Omitting them silently skips
+      # every gate below.
+      #
+      # KEEP IN SYNC WITH ci.yml.
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Install cargo-wix
-        run: cargo install cargo-wix --locked
-
-      - name: Install WiX Toolset
-        run: choco install wixtoolset -y --no-progress
-
-      - name: Build MSI
-        run: cargo wix --nocapture
-
-      - name: SHA-256 checksums
+      - name: Verify tag matches Cargo.toml version
         shell: pwsh
         run: |
-          Get-ChildItem target/wix/*.msi | ForEach-Object {
-            (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $_.Name
-          } | Set-Content target/wix/SHA256SUMS.txt
-          Get-Content target/wix/SHA256SUMS.txt
+          $tag   = "${{ github.ref_name }}" -replace '^v',''
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches.Groups[1].Value
+          if ($tag -ne $cargo) {
+            Write-Error "tag '$tag' does not match Cargo.toml version '$cargo' - bump Cargo.toml before tagging"
+            exit 1
+          }
+          echo "Release version: $tag"
 
-      - name: Attach MSI to release
-        uses: softprops/action-gh-release@v3
+      # ── Quality gates. KEEP IN SYNC WITH ci.yml.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --release
+
+      - name: Build release
+        run: cargo build --release
+
+      # cargo-wix is only the driver; WiX's own candle/light do the work.
+      # Cached by toolchain version so a release does not recompile it.
+      - name: Cache cargo-wix
+        id: wix-cache
+        uses: actions/cache@v4
         with:
-          files: |
-            target/wix/*.msi
-            target/wix/SHA256SUMS.txt
+          path: ~/.cargo/bin/cargo-wix.exe
+          key: cargo-wix-${{ runner.os }}-rust-1.93.1
+
+      - name: Install cargo-wix (cache miss)
+        if: steps.wix-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-wix
+
+      # Portable WiX 3.11 binaries pinned to an exact release, rather than
+      # `choco install wixtoolset`: no package-manager indirection, no
+      # version drift, and roughly a minute faster.
+      - name: Download WiX 3.11 portable binaries
+        shell: pwsh
+        run: |
+          $url  = 'https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip'
+          $zip  = "$env:TEMP\wix311.zip"
+          $dest = "$env:TEMP\wix311"
+          Invoke-WebRequest $url -OutFile $zip
+          Expand-Archive $zip -DestinationPath $dest
+          echo "$dest" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # cargo-wix defines -dVersion from Cargo.toml itself; passing our own
+      # collides with candle.exe (CNDL0288).
+      - name: Build MSI installer
+        run: cargo wix --nocapture
+
+      # Stage everything under dist/ so the release job needs no knowledge of
+      # this project's binary name. Reads the crate name from Cargo.toml.
+      - name: Stage artefacts
+        shell: pwsh
+        run: |
+          $name = (Select-String -Path Cargo.toml -Pattern '^name = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item "target/release/$name.exe" dist/
+          Copy-Item target/wix/*.msi dist/
+          Get-ChildItem dist/*.msi | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $_.Name
+          } | Set-Content dist/SHA256SUMS.txt
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows-release
+          path: dist/*
+
+  release:
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: windows-release
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

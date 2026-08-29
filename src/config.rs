@@ -9,7 +9,10 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { dark_mode: true, zoom: 1.0 }
+        Self {
+            dark_mode: true,
+            zoom: 1.0,
+        }
     }
 }
 
@@ -23,7 +26,9 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        let Some(p) = Self::path() else { return Self::default() };
+        let Some(p) = Self::path() else {
+            return Self::default();
+        };
         std::fs::read_to_string(&p)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())

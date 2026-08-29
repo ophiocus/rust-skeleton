@@ -49,7 +49,10 @@ impl eframe::App for RustSkeletonApp {
                     }
                 });
                 ui.menu_button("View", |ui| {
-                    if ui.checkbox(&mut self.config.dark_mode, "Dark mode").changed() {
+                    if ui
+                        .checkbox(&mut self.config.dark_mode, "Dark mode")
+                        .changed()
+                    {
                         ctx.set_visuals(if self.config.dark_mode {
                             egui::Visuals::dark()
                         } else {

@@ -156,6 +156,37 @@ winget install WiXToolset.WiXToolset
 # or wix314.exe from https://github.com/wixtoolset/wix3/releases
 ```
 
-On CI, `.github/workflows/release.yml` does all of this: every `v*` tag builds the
-`.msi` and attaches it to the GitHub release — which is exactly what the app's
-self-update downloads. Ship with `git tag v0.1.1 && git push --tags`.
+## Shipping
+
+On CI, `.github/workflows/release.yml` does all of the above: a `v*` tag builds
+the `.msi` and attaches it to a GitHub release — which is exactly what the app's
+self-update downloads.
+
+**Nothing is installable until a tag is pushed.** The workflow is tag-triggered
+and does nothing on ordinary commits, so a freshly minted app can sit on GitHub
+looking finished while having no release, no `.msi`, and an updater that finds
+nothing. Pushing the first tag is a step in minting an app, not an afterthought:
+
+```powershell
+# 1. bump `version` in Cargo.toml   2. add the CHANGELOG section
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+The release job refuses to publish if the tag and `Cargo.toml` version disagree,
+so a `.msi` can never report a version its release does not claim.
+
+### The gates
+
+`ci.yml` and `release.yml` both run the same three commands — `cargo fmt
+--check`, `cargo clippy --release --all-targets -- -D warnings`, and `cargo test
+--release`. CI runs them on every PR and push to `master`; the release workflow
+runs them again before it builds.
+
+That duplication is deliberate. Gating **only** at tag-push means a lint that
+exists on CI's toolchain but not yours fails at the moment you are shipping,
+after the tag is public and the version number is spent. Both workflows pin the
+toolchain to the same exact version (not `@stable`) and both request `components:
+rustfmt, clippy` — a versioned toolchain tag ships only the bare compiler, so
+omitting that line turns every gate into a silent no-op. Bump the pin
+deliberately, in both files, once the new toolchain passes locally.
