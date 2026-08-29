@@ -28,8 +28,8 @@
 #       turns every gate below into a silent no-op.
 #    3. Gate command list — the same three commands in both files:
 #         cargo fmt --check
-#         cargo clippy --release --all-targets -- -D warnings
-#         cargo test --release
+#         cargo clippy --workspace --release --all-targets -- -D warnings
+#         cargo test --workspace --release
 #       Adding a fourth gate means editing both files.
 #
 #  No reusable-workflow indirection on purpose: it would move the sync
@@ -90,8 +90,11 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --check
 
+      # --workspace so that when an app grows a second crate, the member's
+      # lints and tests are actually run. A root package plus a workspace
+      # otherwise gates only the binary, silently skipping the member.
       - name: cargo clippy
-        run: cargo clippy --release --all-targets -- -D warnings
+        run: cargo clippy --workspace --release --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test --release
+        run: cargo test --workspace --release

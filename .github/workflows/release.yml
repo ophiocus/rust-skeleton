@@ -74,10 +74,10 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo clippy
-        run: cargo clippy --release --all-targets -- -D warnings
+        run: cargo clippy --workspace --release --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test --release
+        run: cargo test --workspace --release
 
       - name: Build release
         run: cargo build --release
@@ -110,11 +110,26 @@ jobs:
 
       # cargo-wix defines -dVersion from Cargo.toml itself; passing our own
       # collides with candle.exe (CNDL0288).
+      #
+      # `-p` is not optional-by-taste: the moment an app grows a second
+      # crate and the root becomes a workspace, bare `cargo wix` fails with
+      # "Workspace detected. Please pass a package name." Passing it always
+      # means that growth never breaks the release.
       - name: Build MSI installer
-        run: cargo wix --nocapture
+        shell: pwsh
+        run: |
+          $name = (Select-String -Path Cargo.toml -Pattern '^name = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          cargo wix -p $name --nocapture
 
       # Stage everything under dist/ so the release job needs no knowledge of
       # this project's binary name. Reads the crate name from Cargo.toml.
+      #
+      # Each artefact also gets a `<file>.sha256` sidecar alongside the
+      # combined SHA256SUMS.txt. The sidecar is what an in-app updater can
+      # fetch next to the .msi to verify the download *before* handing it to
+      # an elevated msiexec — a combined manifest is for humans, a sidecar is
+      # for the updater. Keep the "<hash>  <name>" shape: a verifier takes
+      # the first whitespace-separated token.
       - name: Stage artefacts
         shell: pwsh
         run: |
@@ -122,7 +137,11 @@ jobs:
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item "target/release/$name.exe" dist/
           Copy-Item target/wix/*.msi dist/
-          Get-ChildItem dist/*.msi | ForEach-Object {
+          Get-ChildItem dist/* -Include *.msi,*.exe | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            Set-Content -Path "$($_.FullName).sha256" -Value "$h  $($_.Name)" -NoNewline
+          }
+          Get-ChildItem dist/* -Include *.msi,*.exe | ForEach-Object {
             (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $_.Name
           } | Set-Content dist/SHA256SUMS.txt
           Get-ChildItem dist | Format-Table Name, Length
