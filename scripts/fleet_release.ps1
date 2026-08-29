@@ -40,6 +40,15 @@
     Discovers apps by scanning -Root for directories containing Cargo.toml and
     a git repository. It names no project: the fleet is whatever is on disk.
 
+    Run it where your git remotes actually resolve. If a remote uses an SSH
+    host alias (git@some-alias:owner/repo.git) defined in an ssh config that
+    this shell does not read - a WSL-only ~/.ssh/config being the usual case -
+    the commit will succeed and the push will fail. Every push here is
+    exit-code checked and then re-verified against `git status -sb`, so that
+    shows up as "PUSH FAILED" rather than as a green report over unpushed
+    work, but the fix is to run from the environment that can reach the
+    remote.
+
 .PARAMETER Root
     Directory whose immediate children are candidate apps. Repeatable.
 
@@ -140,10 +149,21 @@ foreach ($app in $apps) {
     $crate   = Get-CargoField $cargo "name"
     $version = Get-CargoField $cargo "version"
     $branch  = (git -C $app branch --show-current 2>$null)
-    $dirtyN  = @(git -C $app status --porcelain 2>$null | Where-Object { $_ }).Count
+    # Dirtiness that matters is dirtiness the protocol did not cause. An
+    # earlier -Sync run leaves synced workflows and cargo fmt output behind;
+    # counting those as "someone's uncommitted work" means the stages refuse
+    # to compose, and a -Sync run can never be followed by a -Commit run.
+    # --untracked-files=all matters: with the default, git collapses a wholly
+    # untracked directory to a single `?? .github/` line, so a newly created
+    # workflow directory does not match the owned-paths pattern below and the
+    # app looks like it has unfinished work in it.
+    $allDirty = @(git -C $app status --porcelain --untracked-files=all 2>$null | Where-Object { $_ })
+    $ownedRx  = '(\.github/workflows/(ci|release)\.yml|scripts/(build_msi|bootstrap_dev)\.ps1)'
+    $dirtyN   = @($allDirty | Where-Object { $_ -notmatch $ownedRx }).Count
     $remote  = (git -C $app remote get-url origin 2>$null); if ($LASTEXITCODE -ne 0) { $remote = $null }
     $tags    = @(git -C $app tag -l 'v*' 2>$null).Count
     $msi     = Test-Path (Join-Path $app "wix/main.wxs")
+    $foldIn  = $false
 
     $row = [ordered]@{
         app = $name; crate = $crate; version = $version; branch = $branch
@@ -154,7 +174,23 @@ foreach ($app in $apps) {
     Write-Host ("=== {0} ({1} v{2}, {3} tag(s), {4})" -f $name, $crate, $version, $tags, $(if ($msi) { "MSI" } else { "no MSI" }))
 
     if (-not $remote)                    { $row.note = "no git remote";       $row.action = "skipped"; $report += [pscustomobject]$row; Write-Host "  skipped: no git remote`n"; continue }
-    if ($dirtyN -gt 0 -and -not $Force)  { $row.note = "$dirtyN uncommitted"; $row.action = "skipped"; $report += [pscustomobject]$row; Write-Host "  skipped: $dirtyN uncommitted change(s); -Force to override`n"; continue }
+    if ($dirtyN -gt 0 -and -not $Force) {
+        # One exception. If the tree is already fmt-clean and every remaining
+        # change is a .rs file, the diff is this protocol's own earlier
+        # `cargo fmt` rather than unfinished work, and it is safe to fold in.
+        Push-Location $app
+        try { cargo fmt --check 2>&1 | Out-Null; $fmtClean = ($LASTEXITCODE -eq 0) } finally { Pop-Location }
+        $nonRust = @($allDirty | Where-Object { $_ -notmatch $ownedRx -and $_ -notmatch '\.rs$' })
+        if (-not ($fmtClean -and $nonRust.Count -eq 0)) {
+            $row.note = "$dirtyN uncommitted"; $row.action = "skipped"; $report += [pscustomobject]$row
+            Write-Host "  skipped: $dirtyN uncommitted change(s); -Force to override`n"; continue
+        }
+        Write-Host "  note: $dirtyN changed file(s) are formatting from an earlier run - folding in"
+        # The child runs the same dirty check independently and would refuse
+        # on its own. Once the parent has judged the diff to be ours, it has
+        # to say so, or the sync silently degrades to a report.
+        $foldIn = $true
+    }
 
     # ── SYNC ─────────────────────────────────────────────────────────────
     if (-not $Sync) {
@@ -165,9 +201,17 @@ foreach ($app in $apps) {
         continue
     }
 
-    $args = @("-App", $app, "-Skeleton", $skeleton, "-Apply", "-Gate")
-    if ($Force) { $args += "-Force" }
-    & $syncScript @args
+    # NOT $args: that is a PowerShell automatic variable holding this script's
+    # own arguments. Assigning to it does not error, and splatting @args then
+    # passes the wrong array - the child runs without -Apply and silently
+    # syncs nothing while still reporting success.
+    # Always -Force the child. Its own dirty-tree guard exists for someone
+    # running it by hand against one app; by this point the parent has already
+    # made that decision for the whole fleet, and letting the child re-derive
+    # it means a sync can silently degrade to a report while still being
+    # counted as applied.
+    $syncArgs = @{ App = $app; Skeleton = $skeleton; Apply = $true; Force = $true }
+    & $syncScript @syncArgs
 
     # Re-run the gates directly so this script owns the verdict rather than
     # parsing the child's console output.
@@ -204,10 +248,43 @@ foreach ($app in $apps) {
         $msg = "Re-merge build infrastructure from the skeleton`n`nSyncs the shared CI and release plumbing, and formats the tree so it`npasses the gates the synced workflows enforce. No application code."
         $msgFile = Join-Path $app ".git/FLEET_MSG.txt"
         Set-Content -Path $msgFile -Value $msg -Encoding utf8
-        git -C $app add -A                     | Out-Null
-        git -C $app commit -q -F $msgFile      | Out-Null
+        git -C $app add -A                | Out-Null
+        git -C $app commit -q -F $msgFile | Out-Null
+        $commitCode = $LASTEXITCODE
         Remove-Item $msgFile -Force -ErrorAction SilentlyContinue
-        git -C $app push -q origin $branch     | Out-Null
+        if ($commitCode -ne 0) {
+            $row.action = "commit FAILED"; $row.note = "git commit exit $commitCode"
+            $report += [pscustomobject]$row
+            Write-Host "  commit FAILED (exit $commitCode)`n"; continue
+        }
+
+        # Check the push. Never report "pushed" on the strength of having run
+        # the command: a remote using an SSH host alias defined only inside
+        # WSL cannot be resolved by git running under Windows, and the push
+        # fails while the commit succeeds. Claiming success there leaves the
+        # work sitting unpushed behind a green-looking report.
+        $pushOut = git -C $app push origin $branch 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $row.action = "committed, PUSH FAILED"
+            $row.note   = "push failed - commit is local only"
+            $report += [pscustomobject]$row
+            Write-Host "  committed, but PUSH FAILED:"
+            $pushOut | Select-Object -First 4 | ForEach-Object { Write-Host "    $_" }
+            Write-Host "  (an SSH host alias defined only in WSL will not resolve from Windows)`n"
+            continue
+        }
+
+        # Trust the remote, not the command. `git status -sb` still reporting
+        # "ahead" means the push did not actually land.
+        $ahead = (git -C $app status -sb 2>$null | Select-Object -First 1) -match 'ahead'
+        if ($ahead) {
+            $row.action = "committed, PUSH DID NOT LAND"
+            $row.note   = "still ahead of origin/$branch"
+            $report += [pscustomobject]$row
+            Write-Host "  push reported success but the branch is still ahead of origin/$branch`n"
+            continue
+        }
+
         $row.action = "committed + pushed"
         Write-Host "  committed and pushed to $branch"
     }
@@ -241,8 +318,29 @@ foreach ($app in $apps) {
     git -C $app add Cargo.toml Cargo.lock 2>$null | Out-Null
     git -C $app commit -q -m "Release v$next" | Out-Null
     git -C $app tag -a "v$next" -m "v$next"   | Out-Null
-    git -C $app push -q origin $branch        | Out-Null
-    git -C $app push -q origin "v$next"       | Out-Null
+
+    # Push the branch first, and only tag-push if it landed. A tag whose
+    # commit is not on the remote produces a release built from something
+    # nobody else can see.
+    git -C $app push origin $branch 2>&1 | Out-Null
+    $branchOk = ($LASTEXITCODE -eq 0) -and
+                -not ((git -C $app status -sb 2>$null | Select-Object -First 1) -match 'ahead')
+    if (-not $branchOk) {
+        $row.action = "bumped, PUSH FAILED"
+        $row.note   = "v$next tagged locally only - branch never reached origin"
+        $report += [pscustomobject]$row
+        Write-Host "  branch push failed - NOT pushing tag v$next`n"
+        continue
+    }
+
+    git -C $app push origin "v$next" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        $row.action = "pushed, TAG PUSH FAILED"
+        $row.note   = "v$next exists locally; no release triggered"
+        $report += [pscustomobject]$row
+        Write-Host "  tag push failed - no release triggered`n"
+        continue
+    }
 
     $row.action = "released v$next"
     $report += [pscustomobject]$row
