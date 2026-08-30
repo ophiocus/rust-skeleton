@@ -9,30 +9,38 @@
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
 
     <!--
-      Tokens rewritten by scripts/new_app.ps1:
-        __APP_NAME__       : display name (e.g. "My App")
-        __APP_SLUG__       : lowercase folder name (e.g. "myapp")
-        __APP_EXE__        : executable name without .exe (matches Cargo `[[bin]]`)
-        __APP_MANUFACTURER__
-        __APP_DESCRIPTION__
-        __APP_GH_URL__
-        __UPGRADE_GUID__   : fresh UUID per app
-        __PATH_GUID__
-        __DESKTOP_GUID__
+      This file is a working installer for the skeleton itself AND the template
+      every minted app starts from. Those two jobs used to conflict: the
+      placeholders were __TOKEN__ strings, and __UPGRADE_GUID__ is not a legal
+      GUID, so candle.exe rejected the skeleton outright. The skeleton could
+      therefore never build its own MSI, and its release workflow could never
+      have succeeded.
+
+      So the placeholders are real values instead of tokens - exactly the way
+      Cargo.toml has always done it. scripts/new_app.ps1 substitutes these
+      literals when minting, and the all-zero GUIDs below are replaced with
+      fresh ones per app:
+
+        Rust Skeleton                          -> display name
+        rust-skeleton                          -> folder/exe name
+        00000000-0000-0000-0000-00000000000{1..4} -> fresh GUIDs
+
+      Never install the skeleton's own MSI beside a minted app: they would
+      share an UpgradeCode until new_app.ps1 replaces it.
     -->
     <Product
         Id='*'
-        Name='__APP_NAME__'
-        UpgradeCode='__UPGRADE_GUID__'
-        Manufacturer='__APP_MANUFACTURER__'
+        Name='Rust Skeleton'
+        UpgradeCode='00000000-0000-0000-0000-000000000001'
+        Manufacturer='ophiocus'
         Language='1033'
         Codepage='1252'
         Version='$(var.Version)'>
 
         <Package Id='*'
             Keywords='Installer'
-            Description='__APP_DESCRIPTION__'
-            Manufacturer='__APP_MANUFACTURER__'
+            Description='Rust + egui Windows app starter'
+            Manufacturer='ophiocus'
             InstallerVersion='450'
             Languages='1033'
             Compressed='yes'
@@ -46,14 +54,14 @@
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
-        <Property Id='DiskPrompt' Value='__APP_SLUG__ Installation'/>
+        <Property Id='DiskPrompt' Value='rust-skeleton Installation'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
-                <Directory Id='APPLICATIONFOLDER' Name='__APP_SLUG__'>
+                <Directory Id='APPLICATIONFOLDER' Name='rust-skeleton'>
 
                     <Directory Id='Bin' Name='bin'>
-                        <Component Id='Path' Guid='__PATH_GUID__' KeyPath='yes'>
+                        <Component Id='Path' Guid='00000000-0000-0000-0000-000000000002' KeyPath='yes'>
                             <Environment
                                 Id='PATH'
                                 Name='PATH'
@@ -66,23 +74,47 @@
                         <Component Id='binary0' Guid='*'>
                             <File
                                 Id='exe0'
-                                Name='__APP_EXE__.exe'
+                                Name='rust-skeleton.exe'
                                 DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\__APP_EXE__.exe'
+                                Source='$(var.CargoTargetBinDir)\rust-skeleton.exe'
                                 KeyPath='yes'/>
                         </Component>
                     </Directory>
 
-                    <Component Id='DesktopShortcut' Guid='__DESKTOP_GUID__'>
+                    <!--
+                      The Start menu shortcut is what puts the app into
+                      Start > All apps, where it can be pinned and where people
+                      look for installed software. A Desktop shortcut and a PATH
+                      entry place nothing there, so without this an installed
+                      app is simply missing from the app list.
+                    -->
+                    <Component Id='StartMenuShortcut' Guid='00000000-0000-0000-0000-000000000004'>
+                        <Shortcut Id='StartMenuShortcut'
+                            Name='Rust Skeleton'
+                            Description='Rust + egui Windows app starter'
+                            Directory='ProgramMenuFolder'
+                            Target='[Bin]rust-skeleton.exe'
+                            WorkingDirectory='Bin'
+                            Icon='ProductICO' />
+                        <!-- ICE43: a non-advertised shortcut needs an HKCU keypath. -->
+                        <RegistryValue Root='HKCU'
+                            Key='Software\ophiocus\Rust Skeleton'
+                            Name='StartMenuShortcut'
+                            Type='integer'
+                            Value='1'
+                            KeyPath='yes' />
+                    </Component>
+
+                    <Component Id='DesktopShortcut' Guid='00000000-0000-0000-0000-000000000003'>
                         <Shortcut Id='DesktopShortcut'
-                            Name='__APP_NAME__'
-                            Description='__APP_DESCRIPTION__'
+                            Name='Rust Skeleton'
+                            Description='Rust + egui Windows app starter'
                             Directory='DesktopFolder'
-                            Target='[Bin]__APP_EXE__.exe'
+                            Target='[Bin]rust-skeleton.exe'
                             WorkingDirectory='Bin'
                             Icon='ProductICO' />
                         <RegistryValue Root='HKCU'
-                            Key='Software\__APP_MANUFACTURER__\__APP_NAME__'
+                            Key='Software\ophiocus\Rust Skeleton'
                             Name='DesktopShortcut'
                             Type='integer'
                             Value='1'
@@ -90,6 +122,7 @@
                     </Component>
                 </Directory>
             </Directory>
+            <Directory Id='ProgramMenuFolder' Name='Programs' />
             <Directory Id='DesktopFolder' Name='Desktop' />
         </Directory>
 
@@ -103,6 +136,7 @@
             Display='expand'
             Absent='disallow'>
             <ComponentRef Id='binary0'/>
+            <ComponentRef Id='StartMenuShortcut'/>
             <ComponentRef Id='DesktopShortcut'/>
 
             <Feature
@@ -119,7 +153,7 @@
 
         <Icon Id='ProductICO' SourceFile='assets\icon.ico'/>
         <Property Id='ARPPRODUCTICON' Value='ProductICO' />
-        <Property Id='ARPHELPLINK' Value='__APP_GH_URL__'/>
+        <Property Id='ARPHELPLINK' Value='https://github.com/ophiocus/rust-skeleton'/>
 
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>

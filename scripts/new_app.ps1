@@ -63,6 +63,10 @@ Remove-Item -LiteralPath (Join-Path $Target "scripts\new_app.ps1") -Force -Error
 $upgradeGuid = [System.Guid]::NewGuid().ToString().ToUpperInvariant()
 $pathGuid    = [System.Guid]::NewGuid().ToString().ToUpperInvariant()
 $desktopGuid = [System.Guid]::NewGuid().ToString().ToUpperInvariant()
+# Each shortcut component needs its own stable GUID. Sharing one would give two
+# components a single identity, and Windows Installer would treat installing
+# either as having installed both.
+$startMenuGuid = [System.Guid]::NewGuid().ToString().ToUpperInvariant()
 $githubUrl   = "https://github.com/$GitHubRepo"
 
 Write-Host "App name:       $Name"
@@ -107,15 +111,45 @@ $appRsPath = Join-Path $Target "src\app.rs"
 # ---- wix/main.wxs rewrite ----
 $wxsPath = Join-Path $Target "wix\main.wxs"
 $wxs = Get-Content -LiteralPath $wxsPath -Raw
-$wxs = $wxs -replace '__APP_NAME__',         [regex]::Escape($Name).Replace('\', '')
-$wxs = $wxs -replace '__APP_SLUG__',         $Slug
-$wxs = $wxs -replace '__APP_EXE__',          $Exe
-$wxs = $wxs -replace '__APP_MANUFACTURER__', $Manufacturer
-$wxs = $wxs -replace '__APP_DESCRIPTION__',  [regex]::Escape($Description).Replace('\', '')
-$wxs = $wxs -replace '__APP_GH_URL__',       [regex]::Escape($githubUrl).Replace('\', '')
-$wxs = $wxs -replace '__UPGRADE_GUID__',     $upgradeGuid
-$wxs = $wxs -replace '__PATH_GUID__',        $pathGuid
-$wxs = $wxs -replace '__DESKTOP_GUID__',     $desktopGuid
+# The .wxs holds real values rather than __TOKEN__ placeholders, because
+# __UPGRADE_GUID__ is not a legal GUID and candle.exe refuses to compile it -
+# which meant the skeleton could never build its own MSI or cut its own
+# release. Substituting concrete literals is the same approach Cargo.toml has
+# always used here.
+#
+# Order matters: the exe reference is rewritten before the bare slug, or
+# 'rust-skeleton.exe' would first become '<slug>.exe' and the exe name would
+# be lost.
+$wxs = $wxs -replace 'rust-skeleton\.exe', ('{0}.exe' -f $Exe)
+$wxs = $wxs -replace "Id='APPLICATIONFOLDER' Name='rust-skeleton'", ("Id='APPLICATIONFOLDER' Name='{0}'" -f $Slug)
+$wxs = $wxs -replace "Value='rust-skeleton Installation'", ("Value='{0} Installation'" -f $Slug)
+$wxs = $wxs -replace 'Rust Skeleton',        [regex]::Escape($Name).Replace('\', '')
+$wxs = $wxs -replace 'ophiocus',             $Manufacturer
+$wxs = $wxs -replace 'Rust \+ egui Windows app starter', [regex]::Escape($Description).Replace('\', '')
+$wxs = $wxs -replace 'https://github\.com/[^/]+/rust-skeleton', [regex]::Escape($githubUrl).Replace('\', '')
+$wxs = $wxs -replace '00000000-0000-0000-0000-000000000001', $upgradeGuid
+$wxs = $wxs -replace '00000000-0000-0000-0000-000000000002', $pathGuid
+$wxs = $wxs -replace '00000000-0000-0000-0000-000000000003', $desktopGuid
+$wxs = $wxs -replace '00000000-0000-0000-0000-000000000004', $startMenuGuid
+
+# Drop the comment block that documents the placeholder scheme. It is guidance
+# for maintaining the skeleton, it names the skeleton, and neither belongs in a
+# minted app - which is also why it must go before the check below, or its own
+# example values would trip the guard.
+$wxs = [regex]::Replace($wxs, '(?s)\s*<!--\s*This file is a working installer.*?-->', '')
+
+# A placeholder that survives substitution reaches candle.exe in the minted
+# app, where the cause is far less obvious than it is here. An all-zero GUID
+# in particular would silently give two apps the same UpgradeCode, so
+# installing one would uninstall the other.
+$leftover = @()
+if ($wxs -match '__[A-Z_]+__')                        { $leftover += 'a __TOKEN__ placeholder' }
+if ($wxs -match '00000000-0000-0000-0000-0000000000') { $leftover += 'an all-zero placeholder GUID' }
+if ($wxs -match 'rust-skeleton')                      { $leftover += "the skeleton's own name" }
+if ($leftover.Count -gt 0) {
+    throw "wix/main.wxs still contains $($leftover -join ', ') after substitution."
+}
+
 Set-Content -LiteralPath $wxsPath -Value $wxs -NoNewline
 
 # ---- README.md rewrite (replace skeleton README with a fresh stub) ----
