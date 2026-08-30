@@ -26,6 +26,16 @@
     assets. Those are the app, not the scaffolding, and an app that has
     diverged there has diverged on purpose.
 
+    wix/main.wxs in particular must never join the sync list, however tempting
+    a fleet-wide installer improvement makes it: the file carries the app's
+    installer IDENTITY (UpgradeCode, component GUIDs), and copying the
+    skeleton's over it would give every app the same UpgradeCode - Windows
+    Installer would then treat them as one product, so installing one app
+    uninstalls the others. Structural installer improvements travel by
+    surgical patch instead: see retrofit_wxs_startmenu.ps1 for the pattern
+    (clone identity values from the app's own file, mint fresh GUIDs, insert
+    only, validate with candle before writing).
+
     release.yml is only synced into apps that actually package an MSI (they
     have wix/main.wxs). An app without one gets ci.yml alone — gates are
     universal, MSI packaging is not.
